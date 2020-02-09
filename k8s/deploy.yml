@@ -23,7 +23,7 @@ spec:
       containers:
       - name: cn-hm-app-go
         #image: harbor.pcf.humourmind.com/spring/cn-hm-app-go:blue
-        image: harbor.pcf.humourmind.com/k8s/cn-hm-app-go:latest
+        image: harbor.pcf.humourmind.com/k8s/hm-app-go:latest
         imagePullPolicy: Always
         resources:
           requests:
