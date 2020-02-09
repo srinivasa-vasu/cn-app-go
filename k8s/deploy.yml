@@ -1,0 +1,51 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cn-hm-app-go
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cn-hm-app-go
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  minReadySeconds: 50  
+  template:
+    metadata:
+      labels:
+        app: cn-hm-app-go
+    spec:
+      #serviceAccountName: spring-sa
+      containers:
+      - name: cn-hm-app-go
+        #image: harbor.pcf.humourmind.com/spring/cn-hm-app-go:blue
+        image: harbor.pcf.humourmind.com/k8s/cn-hm-app-go:latest
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: "768Mi"
+            cpu: "300m"
+          limits:
+            memory: "768Mi"
+            cpu: "750m"
+        ports:
+        - name: web
+          containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cn-hm-app-go
+  labels:
+    app: cn-hm-app-go
+spec:
+  selector:
+    app: cn-hm-app-go
+  ports:
+  - name: web
+    port: 80
+    targetPort: 8080

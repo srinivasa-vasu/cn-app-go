@@ -1,2 +1,4 @@
 vendor
-cf-sample-app-go
+cf-app-go
+manifest.yml
+glide.yaml
