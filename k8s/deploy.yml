@@ -4,7 +4,6 @@ kind: Deployment
 metadata:
   name: cn-hm-app-go
 spec:
-  sericeAccount: cn-run-sa
   replicas: 1
   selector:
     matchLabels:
@@ -20,7 +19,7 @@ spec:
       labels:
         app: cn-hm-app-go
     spec:
-      #serviceAccountName: spring-sa
+      sericeAccount: cn-run-sa
       containers:
       - name: cn-hm-app-go
         #image: harbor.pcf.humourmind.com/spring/cn-hm-app-go:blue
