@@ -4,6 +4,7 @@ kind: Deployment
 metadata:
   name: cn-hm-app-go
 spec:
+  sericeAccount: cn-run-sa
   replicas: 1
   selector:
     matchLabels:
