@@ -1,0 +1,286 @@
+---
+apiVersion: v1
+data:
+  .dockerconfigjson: <REPLACE_ME>
+kind: Secret
+metadata:
+  creationTimestamp: null
+  name: cn-regcred
+type: kubernetes.io/dockerconfigjson
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cn-pipeline-bot
+secrets:
+  - name: cn-regcred
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: cn-pipeline-bot-crb
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: cn-pipeline-bot
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cn-build-cache-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+---
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: pr-cn-source
+spec:
+  type: git
+  params:
+    - name: revision
+      value: master
+    - name: url
+      value: https://github.com/srinivasa-vasu/cn-app-go
+---
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineResource
+metadata:
+  name: pr-cn-target
+spec:
+  type: image
+  params:
+    - name: url
+      value: <REPLACE_ME>
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: cn-build
+spec:
+  inputs:
+    params:
+      - name: BUILDER_IMAGE
+        description: The image on which builds will run (must include v3 lifecycle and compatible buildpacks).
+      - name: USE_CRED_HELPERS
+        description: Use Docker credential helpers for Google's GCR, Amazon's ECR, or Microsoft's ACR.
+        default: 'true'
+      - name: CACHE
+        description: The name of the persistent app cache volume
+        default: empty-dir
+      - name: USER_ID
+        description: The user ID of the builder image user
+        default: "1000"
+      - name: GROUP_ID
+        description: The group ID of the builder image user
+        default: "1000"
+    resources:
+      - name: source
+        type: git
+  outputs:
+    resources:
+      - name: image
+        type: image
+  steps:
+    - name: prepare
+      image: alpine
+      imagePullPolicy: Always
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >
+          chown -R "$(inputs.params.USER_ID):$(inputs.params.GROUP_ID)" "/layers" &&
+          chown -R "$(inputs.params.USER_ID):$(inputs.params.GROUP_ID)" "/cache" &&
+          chown -R "$(inputs.params.USER_ID):$(inputs.params.GROUP_ID)" "/workspace/source"
+      volumeMounts:
+        - name: "layers-dir"
+          mountPath: /layers
+        - name: "$(inputs.params.CACHE)"
+          mountPath: /cache
+    - name: detect
+      image: $(inputs.params.BUILDER_IMAGE)
+      imagePullPolicy: Always
+      command: ["/lifecycle/detector"]
+      args:
+        - "-app=/workspace/source"
+        - "-group=/layers/group.toml"
+        - "-plan=/layers/plan.toml"
+      volumeMounts:
+        - name: "layers-dir"
+          mountPath: /layers
+    - name: analyze
+      securityContext:
+        runAsUser: 0
+      image: $(inputs.params.BUILDER_IMAGE)
+      imagePullPolicy: Always
+      command: ["/lifecycle/analyzer"]
+      args:
+        - "-layers=/layers"
+        - "-helpers=$(inputs.params.USE_CRED_HELPERS)"
+        - "-group=/layers/group.toml"
+        - "-cache-dir=/cache"
+        - "$(outputs.resources.image.url)"
+      volumeMounts:
+        - name: "layers-dir"
+          mountPath: /layers
+        - name: "$(inputs.params.CACHE)"
+          mountPath: /cache
+    - name: restore
+      image: $(inputs.params.BUILDER_IMAGE)
+      imagePullPolicy: Always
+      command: ["/lifecycle/restorer"]
+      args:
+        - "-group=/layers/group.toml"
+        - "-layers=/layers"
+        - "-cache-dir=/cache"
+      volumeMounts:
+        - name: "$(inputs.params.CACHE)"
+          mountPath: /cache
+        - name: "layers-dir"
+          mountPath: /layers
+    - name: build
+      image: $(inputs.params.BUILDER_IMAGE)
+      imagePullPolicy: Always
+      command: ["/lifecycle/builder"]
+      args:
+        - "-app=/workspace/source"
+        - "-layers=/layers"
+        - "-group=/layers/group.toml"
+        - "-plan=/layers/plan.toml"
+      volumeMounts:
+        - name: "layers-dir"
+          mountPath: /layers
+    - name: export
+      securityContext:
+        runAsUser: 0
+      image: $(inputs.params.BUILDER_IMAGE)
+      imagePullPolicy: Always
+      command: ["/lifecycle/exporter"]
+      args:
+        - "-app=/workspace/source"
+        - "-layers=/layers"
+        - "-helpers=$(inputs.params.USE_CRED_HELPERS)"
+        - "-group=/layers/group.toml"
+        - "-cache-dir=/cache"
+        - "$(outputs.resources.image.url)"
+      volumeMounts:
+        - name: "layers-dir"
+          mountPath: /layers
+        - name: "$(inputs.params.CACHE)"
+          mountPath: /cache
+  volumes:
+    - name: empty-dir
+      emptyDir: {}
+    - name: layers-dir
+      emptyDir: {}
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Task
+metadata:
+  name: cn-kubectl-deploy
+spec:
+  inputs:
+    resources:
+      - name: source
+        type: git
+      - name: image
+        type: image
+    params:
+      - name: path
+        type: string
+        description: Path to the manifest to apply
+      - name: yamlPathToImage
+        type: string
+        description:
+          The path to the image to replace in the yaml manifest (arg to yq)
+  steps:
+    - name: replace-image
+      image: mikefarah/yq
+      command: ["yq"]
+      args:
+        - "w"
+        - "-i"
+        - "$(inputs.params.path)"
+        - "$(inputs.params.yamlPathToImage)"
+        - "$(inputs.resources.image.url)"
+    - name: run-kubectl
+      image: lachlanevenson/k8s-kubectl
+      command: ["kubectl"]
+      args:
+        - "apply"
+        - "-f"
+        - "$(inputs.params.path)"
+---
+apiVersion: tekton.dev/v1alpha1
+kind: Pipeline
+metadata:
+  name: cn-pipeline
+spec:
+  resources:
+    - name: source-repo
+      type: git
+    - name: target-image
+      type: image
+  tasks:
+    - name: cloud-native-build
+      taskRef:
+        name: cn-build
+      params:
+        - name: BUILDER_IMAGE
+          value: cloudfoundry/cnb:tiny
+        - name: CACHE
+          value: image-cache
+      resources:
+        inputs:
+          - name: source
+            resource: source-repo
+        outputs:
+          - name: image
+            resource: target-image
+    - name: cloud-native-deploy
+      taskRef:
+        name: cn-kubectl-deploy
+      resources:
+        inputs:
+          - name: source
+            resource: source-repo
+          - name: image
+            resource: target-image
+            from:
+              - cloud-native-build
+      params:
+        - name: path
+          value: /workspace/source/k8s/deploy.yml
+        - name: yamlPathToImage
+          value: "spec.template.spec.containers[0].image"
+---
+apiVersion: tekton.dev/v1alpha1
+kind: PipelineRun
+metadata:
+  name: cn-pipeline-run
+spec:
+  serviceAccountName: cn-pipeline-bot
+  pipelineRef:
+    name: cn-pipeline
+  podTemplate:
+    volumes:
+      - name: image-cache
+        persistentVolumeClaim:
+          claimName: cn-build-cache-pvc
+  resources:
+    - name: source-repo
+      resourceRef:
+        name: pr-cn-source
+    - name: target-image
+      resourceRef:
+        name: pr-cn-target
