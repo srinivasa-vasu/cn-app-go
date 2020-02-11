@@ -2,3 +2,6 @@ vendor
 cf-app-go
 manifest.yml
 glide.yaml
+tls/
+credentials.yml
+credentials.yaml
